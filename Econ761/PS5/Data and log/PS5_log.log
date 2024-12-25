@@ -1,0 +1,447 @@
+------------------------------------------------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  /Users/yuichirotsuji/Documents/Econ761/PS5/6649_data and programs/Data/1997/PS5_log.log
+  log type:  text
+ opened on:  18 Nov 2024, 04:32:12
+
+. timer clear 1
+
+. timer on 1 // The entrire compilation takes about one min
+
+. ************************************************************************
+. use XMat.dta, clear // dta data created by "PS5_dataclean.do"
+
+. 
+. ***********************************
+. // Probit (Q1)
+. ***********************************
+. // KMart problem (Y_i = 1{Kmart entry})
+. qui probit K_entry W_entry, r
+
+. est store K1
+
+. qui probit K_entry W_entry ln_pop ln_sales pop_urban, r 
+
+. est store K2
+
+. qui probit K_entry W_entry ln_pop ln_sales pop_urban midwest southern, r 
+
+. est store K3
+
+. qui probit K_entry W_entry ln_pop ln_sales pop_urban midwest southern num_small, r 
+
+. est store K4
+
+. qui probit K_entry W_entry ln_pop ln_sales pop_urban midwest southern num_small K_out W_out, r 
+
+. est store K5
+
+. 
+. estout K1 K2 K3 K4 K5, c(b se(par)) stats(aic bic) // (K3) is best
+
+-----------------------------------------------------------------------------
+                       K1           K2           K3           K4           K5
+                     b/se         b/se         b/se         b/se         b/se
+-----------------------------------------------------------------------------
+K_entry                                                                      
+W_entry          .7552805    -.6653749    -.7097111    -.7101701    -.7351082
+               (.0673144)   (.1108574)   (.1208864)   (.1209465)   (.1196754)
+ln_pop                        1.614981     1.746775     1.750901     1.852691
+                            (.0988844)   (.1111667)   (.1186671)   (.1260112)
+ln_sales                       1.75679     1.722648     1.724544     1.682788
+                             (.172655)    (.178645)    (.181212)   (.1803452)
+pop_urban                     1.328494     1.237612     1.232235     1.135114
+                            (.2378754)   (.2415755)   (.2520986)   (.2568016)
+midwest                                    .5781263     .5769648     .5966789
+                                         (.1499486)   (.1506935)   (.1525062)
+southern                                    .328331     .3304752     .3657772
+                                          (.151448)   (.1531483)    (.156443)
+num_small                                              -.0016381    -.0079496
+                                                      (.0194056)   (.0195339)
+K_out                                                                 .526929
+                                                                   (2.606153)
+W_out                                                               -1.897108
+                                                                   (2.541629)
+_cons           -1.299111    -21.04152    -21.53635    -21.55712      -21.396
+               (.0524196)   (1.512884)   (1.617948)   (1.643535)   (1.626033)
+-----------------------------------------------------------------------------
+aic              1881.856     1161.509     1147.853     1149.846     1149.299
+bic              1893.122     1189.674     1187.283     1194.909     1205.628
+-----------------------------------------------------------------------------
+
+. 
+. // WalMart problem (Y_i = 1{Kmart entry})
+. qui probit W_entry K_entry, r
+
+. est store W1
+
+. qui probit W_entry K_entry ln_pop ln_sales pop_urban, r 
+
+. est store W2
+
+. qui probit W_entry K_entry ln_pop ln_sales pop_urban midwest southern, r 
+
+. est store W3
+
+. qui probit W_entry K_entry ln_pop ln_sales pop_urban midwest southern num_small, r 
+
+. est store W4
+
+. qui probit W_entry K_entry ln_pop ln_sales pop_urban midwest southern num_small K_out W_out, r 
+
+. est store W5
+
+. 
+. estout W1 W2 W3 W4 W5, c(b se(par)) stats(aic bic) // (W5) is best
+
+-----------------------------------------------------------------------------
+                       W1           W2           W3           W4           W5
+                     b/se         b/se         b/se         b/se         b/se
+-----------------------------------------------------------------------------
+W_entry                                                                      
+K_entry          .8358952    -.7833834    -.8170231    -.8138729    -.8820992
+               (.0745885)   (.1080143)   (.1164728)   (.1163307)   (.1176518)
+ln_pop                        1.479593     1.647283     1.756891      2.07813
+                            (.0738792)   (.0868625)   (.1027852)   (.1065583)
+ln_sales                      1.065393     1.344086     1.403775     1.363561
+                            (.1118368)   (.1298828)   (.1360882)   (.1361009)
+pop_urban                     1.128099     1.234553     1.113558     .9688701
+                            (.1848199)   (.1954381)   (.1971082)   (.2013095)
+midwest                                    .9575246     .9302593     .9747386
+                                         (.1399562)   (.1405058)   (.1482424)
+southern                                   1.543398     1.588751     1.687916
+                                         (.1421119)   (.1453441)   (.1497733)
+num_small                                              -.0507157    -.0692195
+                                                      (.0195672)   (.0196023)
+K_out                                                               -7.208685
+                                                                   (2.138625)
+W_out                                                                 2.83839
+                                                                   (2.127846)
+_cons           -.2145175    -13.55627    -17.55406    -18.17241    -18.50017
+               (.0309159)   (.9397776)   (1.141374)   (1.216103)   (1.194307)
+-----------------------------------------------------------------------------
+aic              2729.628     1741.296     1590.059     1584.579     1530.393
+bic              2740.893     1769.461     1629.489     1629.642     1586.722
+-----------------------------------------------------------------------------
+
+. 
+. 
+. ***********************************
+. // IV Probit (Q2)
+. ***********************************
+. // probit with IV
+. ivprobit K_entry (W_entry = ln_dBenton) ln_pop ln_sales pop_urban midwest southern, vce(robust)
+
+Fitting exogenous probit model:
+Iteration 0:  Log likelihood = -1004.9923  
+Iteration 1:  Log likelihood =  -606.2221  
+Iteration 2:  Log likelihood = -542.76451  
+Iteration 3:  Log likelihood = -540.43304  
+Iteration 4:  Log likelihood = -540.42834  
+Iteration 5:  Log likelihood = -540.42834  
+
+Fitting full model:
+Iteration 0:  Log pseudolikelihood = -1311.5655  
+Iteration 1:  Log pseudolikelihood = -1311.5596  
+Iteration 2:  Log pseudolikelihood = -1311.5596  
+
+Probit model with endogenous regressors                Number of obs =   2,065
+                                                       Wald chi2(6)  = 1023.01
+Log pseudolikelihood = -1311.5596                      Prob > chi2   =  0.0000
+
+-------------------------------------------------------------------------------------------
+                          |               Robust
+                          | Coefficient  std. err.      z    P>|z|     [95% conf. interval]
+--------------------------+----------------------------------------------------------------
+                  W_entry |  -2.560369    .125173   -20.45   0.000    -2.805703   -2.315034
+                   ln_pop |    1.89032   .1002446    18.86   0.000     1.693844    2.086796
+                 ln_sales |   1.608633   .1465941    10.97   0.000     1.321314    1.895952
+                pop_urban |   1.396006    .182049     7.67   0.000     1.039197    1.752815
+                  midwest |   .7533619   .1282595     5.87   0.000     .5019779    1.004746
+                 southern |   .8803682   .1297978     6.78   0.000     .6259691    1.134767
+                    _cons |  -19.96209   1.450119   -13.77   0.000    -22.80427   -17.11991
+--------------------------+----------------------------------------------------------------
+ corr(e.W_entry,e.K_entry)|   .7768854   .0509798                      .6558136    .8589955
+             sd(e.W_entry)|   .3515127   .0046912                      .3424374    .3608286
+-------------------------------------------------------------------------------------------
+Wald test of exogeneity (corr = 0): chi2(1) = 65.09       Prob > chi2 = 0.0000
+Endogenous: W_entry
+Exogenous:  ln_pop ln_sales pop_urban midwest southern ln_dBenton
+
+. est store IV
+
+. estout IV, c(b se(par))
+
+-------------------------
+                       IV
+                     b/se
+-------------------------
+K_entry                  
+W_entry         -2.560369
+                (.125173)
+ln_pop            1.89032
+               (.1002446)
+ln_sales         1.608633
+               (.1465941)
+pop_urban        1.396006
+                (.182049)
+midwest          .7533619
+               (.1282595)
+southern         .8803682
+               (.1297978)
+_cons           -19.96209
+               (1.450119)
+-------------------------
+W_entry                  
+ln_pop           .3560416
+               (.0136803)
+ln_sales         .2484567
+               (.0199214)
+pop_urban         .256747
+                (.040051)
+midwest          .0034241
+               (.0378244)
+southern          .135804
+               (.0372124)
+ln_dBenton      -.1941999
+               (.0131755)
+_cons           -1.564374
+               (.1788388)
+-------------------------
+/                        
+athrho2_1        1.037466
+               (.1285911)
+lnsigma2        -1.045509
+               (.0133457)
+-------------------------
+
+. 
+. ***********************************
+. // Ordered Probit (Q3)
+. ***********************************
+. // create new variables 
+. cap gen num_large = K_entry + W_entry   //number of large players (i)
+
+. cap gen num_all = num_large + num_small //total number of players (ii)
+
+. 
+. // (i) Y = number of large players
+. oprobit num_large ln_pop ln_sales pop_urban midwest southern, r
+
+Iteration 0:  Log pseudolikelihood = -2056.9421  
+Iteration 1:  Log pseudolikelihood = -1160.5491  
+Iteration 2:  Log pseudolikelihood = -1116.7805  
+Iteration 3:  Log pseudolikelihood =  -1116.134  
+Iteration 4:  Log pseudolikelihood = -1116.1332  
+Iteration 5:  Log pseudolikelihood = -1116.1332  
+
+Ordered probit regression                               Number of obs =  2,065
+                                                        Wald chi2(5)  = 844.69
+                                                        Prob > chi2   = 0.0000
+Log pseudolikelihood = -1116.1332                       Pseudo R2     = 0.4574
+
+------------------------------------------------------------------------------
+             |               Robust
+   num_large | Coefficient  std. err.      z    P>|z|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+      ln_pop |   1.774765   .0731378    24.27   0.000     1.631417    1.918113
+    ln_sales |    1.52665   .1182794    12.91   0.000     1.294826    1.758473
+   pop_urban |   1.309847   .1712478     7.65   0.000     .9742077    1.645487
+     midwest |   .8546219   .1355122     6.31   0.000     .5890228    1.120221
+    southern |   1.125071    .132881     8.47   0.000     .8646288    1.385513
+-------------+----------------------------------------------------------------
+       /cut1 |   19.09947   1.025231                      17.09005    21.10888
+       /cut2 |    21.3908   1.063548                      19.30628    23.47531
+------------------------------------------------------------------------------
+Note: 2 observations completely determined. Standard errors questionable.
+
+. 
+. // (ii) Y = number of all players
+. oprobit num_all ln_pop ln_sales pop_urban midwest southern, r
+
+Iteration 0:  Log pseudolikelihood = -4815.6177  
+Iteration 1:  Log pseudolikelihood = -4018.7115  
+Iteration 2:  Log pseudolikelihood = -4006.0268  
+Iteration 3:  Log pseudolikelihood = -4006.0135  
+Iteration 4:  Log pseudolikelihood = -4006.0135  
+
+Ordered probit regression                              Number of obs =   2,065
+                                                       Wald chi2(5)  = 1287.95
+                                                       Prob > chi2   =  0.0000
+Log pseudolikelihood = -4006.0135                      Pseudo R2     =  0.1681
+
+------------------------------------------------------------------------------
+             |               Robust
+     num_all | Coefficient  std. err.      z    P>|z|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+      ln_pop |   1.387628   .0488903    28.38   0.000     1.291804    1.483451
+    ln_sales |   .8279513   .0655284    12.63   0.000     .6995179    .9563847
+   pop_urban |  -.7462734   .1204718    -6.19   0.000    -.9823937    -.510153
+     midwest |  -.1931576    .117298    -1.65   0.100    -.4230575    .0367423
+    southern |     .65574   .1166475     5.62   0.000     .4271151    .8843649
+-------------+----------------------------------------------------------------
+       /cut1 |   8.424056   .5338792                      7.377672     9.47044
+       /cut2 |   9.420226   .5389304                      8.363942    10.47651
+       /cut3 |   10.19833    .543795                       9.13251    11.26415
+       /cut4 |   10.89967   .5495115                      9.822651     11.9767
+       /cut5 |   11.45192    .554558                        10.365    12.53883
+       /cut6 |   11.91461   .5583577                      10.82025    13.00897
+       /cut7 |   12.34467   .5610875                      11.24495    13.44438
+       /cut8 |   12.68582   .5632563                      11.58185    13.78978
+       /cut9 |   12.96534   .5648978                      11.85816    14.07252
+      /cut10 |    13.3424   .5691707                      12.22685    14.45796
+      /cut11 |   13.57344   .5705949                       12.4551    14.69179
+      /cut12 |   13.87761   .5701576                      12.76012    14.99509
+      /cut13 |   14.48326   .5773549                      13.35167    15.61486
+------------------------------------------------------------------------------
+
+. 
+. 
+. ***********************************
+. // Two-step estimation of static games (Q4)
+. ***********************************
+. cap drop _est*
+
+. // First step: Estimation of choice probability
+. logit K_entry W_entry ln_pop ln_sales pop_urban midwest southern, r 
+
+Iteration 0:  Log pseudolikelihood = -1004.9923  
+Iteration 1:  Log pseudolikelihood = -675.38895  
+Iteration 2:  Log pseudolikelihood = -575.33341  
+Iteration 3:  Log pseudolikelihood = -568.84803  
+Iteration 4:  Log pseudolikelihood = -568.82453  
+Iteration 5:  Log pseudolikelihood = -568.82453  
+
+Logistic regression                                     Number of obs =  2,065
+                                                        Wald chi2(6)  = 367.79
+                                                        Prob > chi2   = 0.0000
+Log pseudolikelihood = -568.82453                       Pseudo R2     = 0.4340
+
+------------------------------------------------------------------------------
+             |               Robust
+     K_entry | Coefficient  std. err.      z    P>|z|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+     W_entry |  -1.284021   .2207665    -5.82   0.000    -1.716716   -.8513269
+      ln_pop |    3.12949   .2029037    15.42   0.000     2.731806    3.527174
+    ln_sales |   3.155952   .3229627     9.77   0.000     2.522957    3.788947
+   pop_urban |   2.155822   .4313925     5.00   0.000     1.310309    3.001336
+     midwest |   1.077378   .2607795     4.13   0.000     .5662597    1.588497
+    southern |   .6074162   .2625969     2.31   0.021     .0927358    1.122097
+       _cons |  -39.12504   2.958336   -13.23   0.000    -44.92327   -33.32681
+------------------------------------------------------------------------------
+
+. cap predict sigma_K, pr                 // predicted entry probability of Kmart
+
+. cap gen sigma_Ko = 1 - sigma_K  // predicted non-entry probability of Kmart
+
+. 
+. logit W_entry K_entry ln_pop ln_sales pop_urban midwest southern, r 
+
+Iteration 0:  Log pseudolikelihood =  -1428.878  
+Iteration 1:  Log pseudolikelihood = -794.05973  
+Iteration 2:  Log pseudolikelihood = -784.00511  
+Iteration 3:  Log pseudolikelihood = -783.93375  
+Iteration 4:  Log pseudolikelihood = -783.93373  
+
+Logistic regression                                     Number of obs =  2,065
+                                                        Wald chi2(6)  = 511.94
+                                                        Prob > chi2   = 0.0000
+Log pseudolikelihood = -783.93373                       Pseudo R2     = 0.4514
+
+------------------------------------------------------------------------------
+             |               Robust
+     W_entry | Coefficient  std. err.      z    P>|z|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+     K_entry |   -1.51656   .2032626    -7.46   0.000    -1.914947   -1.118172
+      ln_pop |   2.920461   .1550761    18.83   0.000     2.616517    3.224405
+    ln_sales |   2.417788   .2363666    10.23   0.000     1.954518    2.881058
+   pop_urban |   2.307691   .3471075     6.65   0.000     1.627373    2.988009
+     midwest |   1.729848   .2454553     7.05   0.000     1.248764    2.210931
+    southern |    2.76946   .2513548    11.02   0.000     2.276814    3.262107
+       _cons |   -31.4393   2.090687   -15.04   0.000    -35.53697   -27.34163
+------------------------------------------------------------------------------
+
+. cap predict sigma_W, pr                 // predicted entry probability of Wal-mart
+
+. cap gen sigma_Wo = 1 - sigma_W  // predicted non-entry probability of Walmart
+
+. 
+. // Second Step: Inversion
+. gen Pi_K = log(sigma_K) - log(sigma_Ko)
+
+. gen Pi_W = log(sigma_W) - log(sigma_Wo)
+
+. 
+. // Third step: Structural parameters estimation
+. reg Pi_K ln_pop ln_sales pop_urban midwest southern sigma_W, r
+
+Linear regression                               Number of obs     =      2,065
+                                                F(6, 2058)        =   37021.69
+                                                Prob > F          =     0.0000
+                                                R-squared         =     0.9767
+                                                Root MSE          =     .44617
+
+------------------------------------------------------------------------------
+             |               Robust
+        Pi_K | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+      ln_pop |   3.141659   .0323941    96.98   0.000     3.078131    3.205188
+    ln_sales |   3.164052   .0278764   113.50   0.000     3.109383    3.218721
+   pop_urban |   2.164591   .0549055    39.42   0.000     2.056915    2.272267
+     midwest |   1.084465   .0448505    24.18   0.000     .9965078    1.172422
+    southern |    .618982   .0461043    13.43   0.000     .5285661    .7093979
+     sigma_W |  -1.317886   .0776277   -16.98   0.000    -1.470123   -1.165649
+       _cons |  -39.22322   .2509529  -156.30   0.000    -39.71537   -38.73107
+------------------------------------------------------------------------------
+
+. est store SK
+
+. 
+. reg Pi_W ln_pop ln_sales pop_urban midwest southern sigma_K, r
+
+Linear regression                               Number of obs     =      2,065
+                                                F(6, 2058)        =   17275.88
+                                                Prob > F          =     0.0000
+                                                R-squared         =     0.9714
+                                                Root MSE          =     .45197
+
+------------------------------------------------------------------------------
+             |               Robust
+        Pi_W | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+      ln_pop |   2.907174   .0218265   133.19   0.000      2.86437    2.949978
+    ln_sales |    2.40888   .0253079    95.18   0.000     2.359249    2.458512
+   pop_urban |   2.297382   .0509692    45.07   0.000     2.197425    2.397338
+     midwest |   1.725986   .0437432    39.46   0.000       1.6402    1.811771
+    southern |   2.769398   .0428297    64.66   0.000     2.685404    2.853392
+     sigma_K |  -1.456384   .0736285   -19.78   0.000    -1.600778    -1.31199
+       _cons |  -31.33311   .1920611  -163.14   0.000    -31.70977   -30.95646
+------------------------------------------------------------------------------
+
+. est store SW
+
+. 
+. estout SK SW, c(b)
+
+--------------------------------------
+                       SK           SW
+                        b            b
+--------------------------------------
+ln_pop           3.141659     2.907174
+ln_sales         3.164052      2.40888
+pop_urban        2.164591     2.297382
+midwest          1.084465     1.725986
+southern          .618982     2.769398
+sigma_W         -1.317886             
+sigma_K                      -1.456384
+_cons           -39.22322    -31.33311
+--------------------------------------
+
+. 
+. ************************************************************************
+. timer off 1
+
+. timer list 1
+   1:      0.89 /        1 =       0.8900
+
+. cap log close

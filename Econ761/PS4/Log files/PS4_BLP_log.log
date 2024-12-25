@@ -1,0 +1,1595 @@
+------------------------------------------------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  /Users/yuichirotsuji/Documents/Econ761/PS4/Data/PS4_BLP_log.log
+  log type:  text
+ opened on:  29 Oct 2024, 20:46:09
+
+. timer clear 1
+
+. timer on 1 // The entrire compilation takes about *** 15 min ***
+
+. 
+. ************************************************************************
+. ************************************
+. // Global variables definition
+. global J = 24 // number of brands in each market
+
+. global T = 94 // number of markets
+
+. set seed 1234
+
+. ************************************************************************
+. *(6) MC recovery with mixed logit demand & BLP results
+. ************************************
+. // import data again and generate basic variables
+. import excel "cereal_ps3.xls",firstrow clear
+(31 vars, 2,256 obs)
+
+. bysort year quarter city: egen share_total = total(share) //get total share of each market
+
+. gen share_o = 1 - share_total //share of outside option, S_0 
+
+. order share_total share_o, after(share)
+
+. 
+. // merge with demographic and v's (created by PS4_datacleaning.do)
+. merge m:1 year quarter city using demogr_and_v // all observations are matched
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                             0
+    Matched                             2,256  (_merge==3)
+    -----------------------------------------
+
+. drop cyq _merge
+
+. 
+. ************************************
+. // calculate choice probability and market shares
+. egen market = group(year quarter city) //generate market number for iteration
+
+. order market, after(quarter)
+
+. gen constant = 1, before(price) // constant var (just for calculation)
+
+. 
+. // use coeffcient estimates in result.txt
+. mat theta_1 = (-1.5869 \ -32.4374 \ 0.1441 \ 0.7725)
+
+. mat theta_2 = (0.3772, 3.0888, 0, 1.1859, 0 \ /*
+>                          */ 1.848, 16.598, -0.659, 0, 11.6245\ /*
+>                          */ -0.0035, -0.1925, 0, 0.0296, 0\ /*
+>                          */ 0.081, 1.4684, 0, -1.5143, 0) 
+
+. 
+. mkmat constant price sugar mushy , mat(x_jt) // get "X2" variables from data
+
+. mat delta_jt = x_jt *  theta_1 // market-brand specific mean utility
+
+. *mat list delta_jt // (2256*1) vector
+. svmat delta_jt, name(delta) // give delta to dta dataframe
+
+. 
+. ***** Compute \mu_ijt for 20 people in each market (until line.213)*****
+. // create \mu_1jt (first person in each market)
+. mkmat inc1 inc_sq1 age1 child1, mat(D) // demographic variables
+
+. mkmat vo_1 vp_1 vs_1 vm_1, mat(V) // demographic random draws
+
+. mat mu_ijt = hadamard(x_jt, V)*theta_2[1..4,1] /*
+>                         */+ hadamard(x_jt, D*(theta_2[1..4,2..5])')*J(4,1,1)
+
+. mat alpha_i = /* // price sensitive parameter (need for calculating ds/dp)
+>                 */ J(2256,1,theta_1[2,1]) + V[1..2256,2]*theta_2[2,1] + D*(theta_2[2,2..5])'
+
+. 
+. // repeat for 20 consumers in the market
+. forvalues i = 2(1)20{
+  2.         mkmat inc`i' inc_sq`i' age`i' child`i', mat(D) // demographic variables
+  3.         mkmat vo_`i' vp_`i' vs_`i' vm_`i', mat(V) // demographic random draws
+  4.         mat mu_ijt = mu_ijt, hadamard(x_jt, V)*theta_2[1..4,1] /*
+>                         */+ hadamard(x_jt, D*(theta_2[1..4,2..5])')*J(4,1,1)
+  5.         mat alpha_i = /* // price sensitive parameter (need for calculating ds/dp)
+>                 */ alpha_i, J(2256,1,theta_1[2,1]) + V[1..2256,2]*theta_2[2,1] + D*(theta_2[2,2..5])'
+  6. }
+
+. ***** \mu_ijt cumputation complete *****
+. svmat mu_ijt, name(mu) // give \mu_ijt to dta dataframe
+
+. svmat alpha_i, name(alph) // give \alpha_i to dta dataframe
+
+. 
+. // create individual choice prob (as new vars) for 20 people in each market
+. forvalues i = 1(1)20{
+  2.         gen s_numel_`i' = exp(delta1 + mu`i')
+  3.         bysort market: egen s_denom_`i' = total(s_numel_`i')
+  4.         gen s_jt_`i' = s_numel_`i'/(1+s_denom_`i')
+  5.         drop s_numel_`i'
+  6.         drop s_denom_`i'
+  7. }
+
+. 
+. // derive market shares (Equation(11) of Nevo(2000a))
+. egen s_jt = rowmean(s_jt_1 - s_jt_20) 
+
+. 
+. 
+. ************************************
+. // create Ometa^pre and recover MC
+. forvalues i = 1(1)20{
+  2.         gen eps_own_`i' = alph`i' * s_jt_`i'*(1-s_jt_`i')
+  3. } 
+
+. egen eps_own = rowmean(eps_own_1 - eps_own_20) // average of 20 individual \epsilon
+
+. 
+. ***** Recover MC (until line.xxx) *****
+. // For t=1 (just to create an initial MC vector: Stata can't have an empty vector.)
+. mkmat eps_own if market == 1, mat(E) // own-price elasticity of market 1 (J*1 vector)
+
+. mkmat price if market == 1, mat(P) // price vector of market 1
+
+. mkmat s_jt if market == 1, mat(S) // share vector of market 1
+
+. mkmat s_jt_1 - s_jt_20 if market == 1, mat(Si) // choice prob matrix of 20 people in market 1
+
+. mkmat alph1 - alph20 if market == 1, mat(Ai) // price sensitivity parameter of 20 people in market 1
+
+.         
+. matrix Omega_pre = J($J, $J, 0) // J*J matrix for Omega (in market 1)
+
+. forvalues j = 1(1)$J{
+  2.         mat Omega_pre[`j',`j'] = -E[`j', 1] // (j,j) element is own-price elasticity
+  3.         
+.         // cross price elasticity enters if j and k are produced by the same firm
+.         forvalues k = 1(1)$J{
+  4.         if firm[`j'] == firm[`k'] & `j' != `k'{
+  5.                 local s = 0
+  6.                 forvalues i =1(1)20{
+  7.                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])
+  8.                 }
+  9.                 mat Omega_pre[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 10.                 }
+ 11.         }
+ 12. }
+
+. 
+. // MC of brands in market 1 (we'll add MCs in other markets vertically) 
+. cap mat drop MC // initialize the MC vector
+
+. mat MC = P - (invsym(Omega_pre)*S) //
+
+. 
+. // same for other markets (t=2,3,...,94)
+. forvalues t = 2(1)94{
+  2.         // get price and share vectors from data 
+.         mkmat eps_own if market == `t', mat(E) // own-price elasticity of market t (J*1 vector)
+  3.         mkmat price if market == `t', mat(P) // price vector of market t
+  4.         mkmat s_jt if market == `t', mat(S) // share vector of market t
+  5.         mkmat s_jt_1 - s_jt_20 if market == `t', mat(Si) // choice prob matrix of 20 people in market 1
+  6.         mkmat alph1 - alph20 if market == `t', mat(Ai) // price sensitivity parameter of 20 people in market 1
+  7.         
+.         matrix Omega_pre = J($J, $J, 0) // J*J matrix for Omega (in market t)
+  8.         forvalues j = 1(1)$J{
+  9.                 mat Omega_pre[`j',`j'] = -E[`j', 1] // (j,j) element is own-price elasticity
+ 10.         
+.                 // cross price elasticity enters if j and k are produced by the same firm
+.                 forvalues k = 1(1)$J{
+ 11.                         if firm[`j'] == firm[`k'] & `j' != `k'{
+ 12.                                 local s = 0
+ 13.                                 forvalues i =1(1)20{
+ 14.                                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])
+ 15.                                 }
+ 16.                                 mat Omega_pre[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 17.                         }
+ 18.                 }
+ 19.         }       
+ 20.         mat MC = MC\(P - (invsym(Omega_pre)*S)) //add MC of market t(=2,3,..,94)
+ 21. }
+
+. ***** Recover MC ends*****
+. svmat MC, name(MC) // give MC to dta dataframe
+
+. gen Markups = price - MC1 // calculate markups
+
+. gen PCM = Markups/price // calculate MPC
+
+. 
+. tabstat Markups PCM MC1, stat(mean median sd) // Mean, median and SD (used in Q1(6))
+
+   Stats |   Markups       PCM       MC1
+---------+------------------------------
+    Mean |  .0435736   .373053   .082166
+     p50 |  .0408209  .3300097  .0817146
+      SD |  .0104121  .1626013  .0328807
+----------------------------------------
+
+. 
+. 
+. ************************************************************************
+. ************************************
+. *(7) Merger simulation with mixed logit demand & BLP results
+. ************************************
+. timer clear 2
+
+. timer on 2
+
+. // Case I: Post(3)-Nabisco(6) merger
+. cap gen firm_PNmerge = firm // new ownership for Omega^post
+
+. replace firm_PNmerge = 3 if firm_PNmerge == 6 // Now Post(3) and Nabisco(6) are under the same owner
+(94 real changes made)
+
+. 
+. mat C = J($J, 1, 1) //constants
+
+. 
+. mkmat price if market == 1, mat(P) // price vector of market 1
+
+. mkmat sugar mushy if market == 1, mat(X) // exogenous variables of market 1
+
+. mkmat delta1 if market == 1, mat(Delta) // mean utility of market 1
+
+. mkmat s_jt if market == 1, mat(S) // share vector of market 1
+
+. 
+. // individual parts (make individual-specific vector for calculation)
+. forvalues i = 1(1)20{
+  2.         mkmat eps_own_`i' if market == 1, mat(E`i') // individual own-price elasticity of market 1
+  3.         mkmat s_jt_`i' if market == 1, mat(S`i') // choice prob matrix of 20 people in market 1
+  4.         mkmat alph`i' if market == 1, mat(A`i') // price sensitivity parameter of 20 people in market 1
+  5. }
+
+. 
+. mkmat eps_own if market == 1, mat(E) // own-price elasticity of market 1 (J*1 vector)
+
+. mkmat s_jt_1 - s_jt_20 if market == 1, mat(Si) // choice prob matrix of 20 people in market 1
+
+. mkmat alph1 - alph20 if market == 1, mat(Ai) // price sensitivity parameter of 20 people in market 1
+
+. mkmat MC1 if market == 1, mat(MC) // MC estimates of market 1 
+
+. 
+. matrix Omega_post = J($J, $J, 0) // J*J matrix for Omega (in market 1)
+
+. forvalues j = 1(1)$J{
+  2.         mat Omega_post[`j',`j'] = -E[`j', 1] // (j,j) element is own-price elasticity
+  3.         
+.         // cross price elasticity enters if j and k are produced by the same firm
+.         forvalues k = 1(1)$J{
+  4.         if firm_PNmerge[`j'] == firm_PNmerge[`k'] & `j' != `k'{
+  5.                 local s = 0
+  6.                 forvalues i =1(1)20{
+  7.                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])
+  8.                 }
+  9.                 mat Omega_post[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 10.                 }
+ 11.         }
+ 12. }
+
+. mat P_prime = MC + (invsym(Omega_post)*S)
+
+. 
+. mata {
+>         P = st_matrix("P")
+>         P_prime = st_matrix("P_prime")
+>         nor = norm(P - P_prime)
+>         st_numscalar("distance", nor)
+> }
+
+. local dist = distance
+
+. //di `dist'
+. 
+. 
+. // get individual-specific demographic vars and v-shock values
+. forvalues i = 1(1)20{
+  2.         mkmat inc`i' inc_sq`i' age`i' child`i' if market == 1, mat(D`i') // demographic variables
+  3.         mkmat vo_`i' vp_`i' vs_`i' vm_`i' if market == 1, mat(V`i') // demographic random draws
+  4. }
+
+. 
+. forvalues l = 1(1)20 {
+  2.         mat P = P_prime // update prices
+  3.         mat Delta = (C,P,X)*theta_1 // update mean utility
+  4.         mat S = J($J, 1, 0)
+  5. 
+.         forvalues i = 1(1)20{
+  6.                 mat M`i' = hadamard((C,P,X), V`i')*theta_2[1..4,1] /*
+>                         */+ hadamard((C,P,X), D`i'*(theta_2[1..4,2..5])')*J(4,1,1) //update individual shock
+  7.                 mat A`i' = /* // update price sensitive parameter
+>                 */ J(24, 1, theta_1[2,1]) + V`i'[1..24,2]*theta_2[2,1] + D`i'*(theta_2[2,2..5])'        
+  8.         
+.                 mata {
+  9.                         delta = st_matrix("Delta")
+ 10.                         mu = st_matrix("M`i'")
+ 11.                         share_numel = exp(delta+mu)
+ 12.                         share_denom = 1 + colsum(share_numel)
+ 13.                         share = share_numel/share_denom
+ 14.                         st_matrix("Share`i'", share)
+ 15.                         }
+ 16.                 mat S`i' = Share`i'
+ 17.                 mat S = S + S`i'
+ 18.         }
+ 19.         mat S = S/20
+ 20. 
+.         mat Si = [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, /*
+>                 */ S11, S12, S13, S14, S15, S16, S17, S18, S19, S20]
+ 21.         mat Ai = [A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, /*
+>                 */ A11, A12, A13, A14, A15, A16, A17, A18, A19, A20]
+ 22.                 
+.         mat Omega_post = J($J, $J, 0) // J*J matrix for Omega (in market 1)             
+ 23.         forvalues j = 1(1)$J {
+ 24.                 // cross price elasticity enters if j and k are produced by the same firm
+.                 forvalues k = 1(1)$J {
+ 25.                         if `j' == `k'{
+ 26.                                 local eps = 0
+ 27.                                 forvalues i =1(1)20{
+ 28.                                         local eps = `eps' + (Ai[1, `i']*Si[`j',`i']*(1-Si[`k',`i']))
+ 29.                                 }
+ 30.                                 mat Omega_post[`j',`k'] = (-1)*`eps'/20 // average of 20 people's individual elasti
+> cities
+ 31.                         }               
+ 32.                         else if firm_PNmerge[`j'] == firm_PNmerge[`k'] & `j' != `k'{
+ 33.                                 local s = 0
+ 34.                                 forvalues i =1(1)20{
+ 35.                                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])                       
+>              
+ 36.                                 }
+ 37.                                 mat Omega_post[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 38.                         }
+ 39.                 }
+ 40.         }
+ 41.         mat P_prime = MC + (invsym(Omega_post)*S) // new guess of post-merger price
+ 42.         
+.         mata {
+ 43.                 P = st_matrix("P")
+ 44.                 P_prime = st_matrix("P_prime")
+ 45.                 nor = norm(P - P_prime)
+ 46.                 st_numscalar("distance", nor)
+ 47.         }
+ 48.         
+.         local dist = distance
+ 49.         //di `dist'
+. }
+
+. 
+. mat P_post_PN = P_prime // Vector for storing post-merger prices
+
+. mat Q_post_PN = S // Vector for storing post-merger quantities
+
+. 
+. *****
+. // same for other markets (t=2,3,...,94)
+. forvalues t = 2(1)$T {
+  2.         mkmat price if market == `t', mat(P) // price vector of market 1
+  3.         mkmat sugar mushy if market == `t', mat(X) // exogenous variables of market 1
+  4.         mkmat delta1 if market == `t', mat(Delta) // mean utility of market 1
+  5.         mkmat s_jt if market == `t', mat(S) // share vector of market 1
+  6. 
+.         // individual parts (make individual-specific vector for calculation)
+.         forvalues i = 1(1)20{
+  7.                 mkmat eps_own_`i' if market == `t', mat(E`i') // individual own-price elasticity of market 1
+  8.                 mkmat s_jt_`i' if market == `t', mat(S`i') // choice prob matrix of 20 people in market 1
+  9.                 mkmat alph`i' if market == `t', mat(A`i') // price sensitivity parameter of 20 people in market 1
+ 10.         }
+ 11. 
+.         mkmat eps_own if market == `t', mat(E) // own-price elasticity of market 1 (J*1 vector)
+ 12.         mkmat s_jt_1 - s_jt_20 if market == `t', mat(Si) // choice prob matrix of 20 people in market 1
+ 13.         mkmat alph1 - alph20 if market == `t', mat(Ai) // price sensitivity parameter of 20 people in market 1
+ 14.         mkmat MC1 if market == `t', mat(MC) // MC estimates of market 1 
+ 15. 
+.         matrix Omega_post = J($J, $J, 0) // J*J matrix for Omega (in market 1)
+ 16.         forvalues j = 1(1)$J{
+ 17.                 mat Omega_post[`j',`j'] = -E[`j', 1] // (j,j) element is own-price elasticity
+ 18.         
+.                 // cross price elasticity enters if j and k are produced by the same firm
+.                 forvalues k = 1(1)$J{
+ 19.                         if firm_PNmerge[`j'] == firm_PNmerge[`k'] & `j' != `k'{
+ 20.                                 local s = 0
+ 21.                                 forvalues i =1(1)20{
+ 22.                                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])
+ 23.                                 }
+ 24.                                 mat Omega_post[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 25.                         }
+ 26.                 }
+ 27.         }
+ 28. 
+.         mata {
+ 29.                 P = st_matrix("P")
+ 30.                 P_prime = st_matrix("P_prime")
+ 31.                 nor = norm(P - P_prime)
+ 32.                 st_numscalar("distance", nor)
+ 33.                 }
+ 34.         local dist = distance
+ 35.         //di `dist'
+. 
+.         // get individual-specific demographic vars and v-shock values
+.         forvalues i = 1(1)20{
+ 36.                 mkmat inc`i' inc_sq`i' age`i' child`i' if market == 1, mat(D`i') // demographic variables
+ 37.                 mkmat vo_`i' vp_`i' vs_`i' vm_`i' if market == 1, mat(V`i') // demographic random draws
+ 38.         }
+ 39. 
+.         forvalues l = 1(1)20 {
+ 40.                 mat P = P_prime // update prices
+ 41.                 mat Delta = (C,P,X)*theta_1 // update mean utility
+ 42.                 mat S = J($J, 1, 0)
+ 43.         
+.                 forvalues i = 1(1)20{
+ 44.                         mat M`i' = hadamard((C,P,X), V`i')*theta_2[1..4,1] /*
+>                                 */+ hadamard((C,P,X), D`i'*(theta_2[1..4,2..5])')*J(4,1,1) //update individual shock
+ 45.                         mat A`i' = /* // update price sensitive parameter
+>                                 */ J(24, 1, theta_1[2,1]) + V`i'[1..24,2]*theta_2[2,1] + D`i'*(theta_2[2,2..5])'      
+>   
+ 46.         
+.                         mata {
+ 47.                                 delta = st_matrix("Delta")
+ 48.                                 mu = st_matrix("M`i'")
+ 49.                                 share_numel = exp(delta+mu)
+ 50.                                 share_denom = 1 + colsum(share_numel)
+ 51.                                 share = share_numel/share_denom
+ 52.                                 st_matrix("Share`i'", share)
+ 53.                         }
+ 54.                         mat S`i' = Share`i'
+ 55.                         mat S = S + S`i'
+ 56.                 }
+ 57.                 
+.                 mat S = S/20
+ 58.                 mat Si = [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, /*
+>                 */ S11, S12, S13, S14, S15, S16, S17, S18, S19, S20]
+ 59.                 mat Ai = [A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, /*
+>                 */ A11, A12, A13, A14, A15, A16, A17, A18, A19, A20]
+ 60.                 
+.                 mat Omega_post = J($J, $J, 0) // J*J matrix for Omega (in market 1)             
+ 61.                 forvalues j = 1(1)$J {
+ 62.                         // cross price elasticity enters if j and k are produced by the same firm
+.                         forvalues k = 1(1)$J {
+ 63.                                 if `j' == `k'{
+ 64.                                         local eps = 0
+ 65.                                         forvalues i =1(1)20{
+ 66.                                         local eps = `eps' + (Ai[1, `i']*Si[`j',`i']*(1-Si[`k',`i']))
+ 67.                                         }
+ 68.                                         mat Omega_post[`j',`k'] = (-1)*`eps'/20 // average of 20 people's individua
+> l elasticities
+ 69.                                 }               
+ 70.                                 else if firm_PNmerge[`j'] == firm_PNmerge[`k'] & `j' != `k'{
+ 71.                                         local s = 0
+ 72.                                         forvalues i =1(1)20{
+ 73.                                                 local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])               
+>                      
+ 74.                                         }
+ 75.                                         mat Omega_post[`j',`k'] = `s'/20 // average of 20 people's individual elast
+> icities
+ 76.                                 }
+ 77.                         }
+ 78.                 }
+ 79.                 mat P_prime = MC + (invsym(Omega_post)*S) // new guess of post-merger price
+ 80.         
+.                 mata {
+ 81.                         P = st_matrix("P")
+ 82.                         P_prime = st_matrix("P_prime")
+ 83.                         nor = norm(P - P_prime)
+ 84.                         st_numscalar("distance", nor)
+ 85.                 }
+ 86.         
+.                 local dist = distance
+ 87.                 *di `dist'
+.         }
+ 88.         mat P_post_PN = P_post_PN \ P_prime
+ 89.         mat Q_post_PN = Q_post_PN \ S
+ 90. }
+
+. 
+. svmat P_post_PN, name(price_PN)
+
+. svmat Q_post_PN, name(share_PN)
+
+. 
+. *tabstat price price_PN1, stat(mean median SD)
+. *bysort firmbr: tabstat price price_PN1, stat(mean median SD)
+. gen diff_p_PN = price_PN1 - price
+
+. bysort firmbr: tabstat diff_p_PN, stat(mean median SD)
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1004
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  .0050447   .004847  .0060948
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1006
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0022569 -.0014506  .0041613
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1007
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  .0043169  .0040261  .0058912
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1009
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  .0008267  .0013385  .0052028
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1011
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  -.002006 -.0014762  .0037811
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1013
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0020798 -.0015283  .0035054
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1017
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  .0049596  .0045075  .0062271
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1030
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  .0006451   .000667   .005046
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1045
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0021366 -.0016128  .0035114
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2005
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  .0003979  .0003301  .0024085
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2008
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0018621 -.0019458  .0019262
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2015
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  .0014652  .0015681  .0034258
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2016
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  .0016727  .0018257  .0039617
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2019
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0017656 -.0017169  .0019972
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2026
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0018265 -.0019056   .001968
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2028
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0011367 -.0009078  .0033316
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2040
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0017762 -.0017435  .0019338
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2048
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0001659 -.0001234  .0022834
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 3006
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0003986 -.0000877  .0022851
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 3014
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0001382  .0000553  .0010178
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4002
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0010067 -.0009785  .0012022
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4010
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0011152 -.0011708  .0009667
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4012
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN | -.0011816 -.0014049  .0010555
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 6018
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_PN |  .0026109  .0024813  .0018704
+--------------------------------------------
+
+. 
+. gen Q_diff_PN = share_PN1 - share
+
+. bysort firmbr: tabstat Q_diff_PN, stat(mean median SD)
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1004
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0735586   .068603  .0310624
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1006
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0251726  .0222679  .0419927
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1007
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0112307  .0137499    .02523
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1009
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0018455 -.0001696  .0088289
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1011
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0434563 -.0267698  .0587472
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1013
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0025882  .0010169  .0162226
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1017
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0054199  .0087155  .0221911
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1030
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0024805 -.0003202  .0065991
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1045
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0026091  .0019296  .0090247
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2005
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0215241 -.0134242  .0268175
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2008
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |    -.0101 -.0053987  .0195061
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2015
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0486802  .0445942  .0235535
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2016
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0006179  .0062402  .0222431
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2019
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0088309 -.0006714  .0225846
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2026
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0082548 -.0038174  .0122808
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2028
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0141587 -.0065447  .0186297
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2040
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0016214  .0020935  .0078588
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2048
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0030473  -.000446  .0076868
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 3006
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0534096  .0448306  .0398253
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 3014
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0266508 -.0184729  .0314399
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4002
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0122849 -.0066226  .0181997
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4010
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN |  .0028148  .0025996  .0121148
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4012
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0012119  .0011346  .0194015
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 6018
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_PN | -.0166507 -.0098893  .0197066
+--------------------------------------------
+
+. 
+. timer off 2
+
+. timer list 2 
+   2:    308.01 /        1 =     308.0090
+
+.         
+. ************************************************************************
+. ************************************************************************
+. timer clear 3
+
+. timer on 3
+
+. // Case II: GM(2)-Quaker(4) merger
+. gen firm_GQmerge = firm // new ownership for Omega^post
+
+. replace firm_GQmerge = 2 if firm_GQmerge == 4 // Now GM(2) and Quaker(4) are under the same owner
+(282 real changes made)
+
+. 
+. mat C = J($J, 1, 1) //constants
+
+. 
+. mkmat price if market == 1, mat(P) // price vector of market 1
+
+. mkmat sugar mushy if market == 1, mat(X) // exogenous variables of market 1
+
+. mkmat delta1 if market == 1, mat(Delta) // mean utility of market 1
+
+. mkmat s_jt if market == 1, mat(S) // share vector of market 1
+
+. 
+. // individual parts (make individual-specific vector for calculation)
+. forvalues i = 1(1)20{
+  2.         mkmat eps_own_`i' if market == 1, mat(E`i') // individual own-price elasticity of market 1
+  3.         mkmat s_jt_`i' if market == 1, mat(S`i') // choice prob matrix of 20 people in market 1
+  4.         mkmat alph`i' if market == 1, mat(A`i') // price sensitivity parameter of 20 people in market 1
+  5. }
+
+. 
+. mkmat eps_own if market == 1, mat(E) // own-price elasticity of market 1 (J*1 vector)
+
+. mkmat s_jt_1 - s_jt_20 if market == 1, mat(Si) // choice prob matrix of 20 people in market 1
+
+. mkmat alph1 - alph20 if market == 1, mat(Ai) // price sensitivity parameter of 20 people in market 1
+
+. mkmat MC1 if market == 1, mat(MC) // MC estimates of market 1 
+
+. 
+. matrix Omega_post = J($J, $J, 0) // J*J matrix for Omega (in market 1)
+
+. forvalues j = 1(1)$J{
+  2.         mat Omega_post[`j',`j'] = -E[`j', 1] // (j,j) element is own-price elasticity
+  3.         
+.         // cross price elasticity enters if j and k are produced by the same firm
+.         forvalues k = 1(1)$J{
+  4.         if firm_GQmerge[`j'] == firm_GQmerge[`k'] & `j' != `k'{
+  5.                 local s = 0
+  6.                 forvalues i =1(1)20{
+  7.                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])
+  8.                 }
+  9.                 mat Omega_post[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 10.                 }
+ 11.         }
+ 12. }
+
+. mat P_prime = MC + (invsym(Omega_post)*S)
+
+. 
+. mata {
+>         P = st_matrix("P")
+>         P_prime = st_matrix("P_prime")
+>         nor = norm(P - P_prime)
+>         st_numscalar("distance", nor)
+> }
+
+. local dist = distance
+
+. //di `dist'
+.         
+. // get individual-specific demographic vars and v-shock values
+. forvalues i = 1(1)20{
+  2.         mkmat inc`i' inc_sq`i' age`i' child`i' if market == 1, mat(D`i') // demographic variables
+  3.         mkmat vo_`i' vp_`i' vs_`i' vm_`i' if market == 1, mat(V`i') // demographic random draws
+  4. }
+
+. 
+. forvalues l = 1(1)20 {
+  2.         mat P = P_prime // update prices
+  3.         mat Delta = (C,P,X)*theta_1 // update mean utility
+  4.         mat S = J($J, 1, 0)
+  5. 
+.         forvalues i = 1(1)20{
+  6.                 mat M`i' = hadamard((C,P,X), V`i')*theta_2[1..4,1] /*
+>                         */+ hadamard((C,P,X), D`i'*(theta_2[1..4,2..5])')*J(4,1,1) //update individual shock
+  7.                 mat A`i' = /* // update price sensitive parameter
+>                 */ J(24, 1, theta_1[2,1]) + V`i'[1..24,2]*theta_2[2,1] + D`i'*(theta_2[2,2..5])'        
+  8.         
+.                 mata {
+  9.                         delta = st_matrix("Delta")
+ 10.                         mu = st_matrix("M`i'")
+ 11.                         share_numel = exp(delta+mu)
+ 12.                         share_denom = 1 + colsum(share_numel)
+ 13.                         share = share_numel/share_denom
+ 14.                         st_matrix("Share`i'", share)
+ 15.                         }
+ 16.                 mat S`i' = Share`i'
+ 17.                 mat S = S + S`i'
+ 18.         }
+ 19.         mat S = S/20
+ 20. 
+.         mat Si = [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, /*
+>                 */ S11, S12, S13, S14, S15, S16, S17, S18, S19, S20]
+ 21.         mat Ai = [A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, /*
+>                 */ A11, A12, A13, A14, A15, A16, A17, A18, A19, A20]
+ 22.                 
+.         mat Omega_post = J($J, $J, 0) // J*J matrix for Omega (in market 1)             
+ 23.         forvalues j = 1(1)$J {
+ 24.                 // cross price elasticity enters if j and k are produced by the same firm
+.                 forvalues k = 1(1)$J {
+ 25.                         if `j' == `k'{
+ 26.                                 local eps = 0
+ 27.                                 forvalues i =1(1)20{
+ 28.                                         local eps = `eps' + (Ai[1, `i']*Si[`j',`i']*(1-Si[`k',`i']))
+ 29.                                 }
+ 30.                                 mat Omega_post[`j',`k'] = (-1)*`eps'/20 // average of 20 people's individual elasti
+> cities
+ 31.                         }               
+ 32.                         else if firm_GQmerge[`j'] == firm_GQmerge[`k'] & `j' != `k'{
+ 33.                                 local s = 0
+ 34.                                 forvalues i =1(1)20{
+ 35.                                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])                       
+>              
+ 36.                                 }
+ 37.                                 mat Omega_post[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 38.                         }
+ 39.                 }
+ 40.         }
+ 41.         mat P_prime = MC + (invsym(Omega_post)*S) // new guess of post-merger price
+ 42.         
+.         mata {
+ 43.                 P = st_matrix("P")
+ 44.                 P_prime = st_matrix("P_prime")
+ 45.                 nor = norm(P - P_prime)
+ 46.                 st_numscalar("distance", nor)
+ 47.         }
+ 48.         
+.         local dist = distance
+ 49.         di `dist'
+ 50. }
+.07591643
+.01674344
+.00389868
+.00095077
+.00022647
+.00005457
+.00001308
+3.143e-06
+7.543e-07
+1.811e-07
+4.348e-08
+1.044e-08
+2.507e-09
+6.018e-10
+1.445e-10
+3.469e-11
+8.329e-12
+2.000e-12
+4.801e-13
+1.153e-13
+
+. 
+. mat P_post_GQ = P_prime // Vector for storing post-merger prices
+
+. mat Q_post_GQ = S // Vector for storing post-merger quantities
+
+. 
+. *****
+. // same for other markets (t=2,3,...,94)
+. forvalues t = 2(1)$T {
+  2.         mkmat price if market == `t', mat(P) // price vector of market 1
+  3.         mkmat sugar mushy if market == `t', mat(X) // exogenous variables of market 1
+  4.         mkmat delta1 if market == `t', mat(Delta) // mean utility of market 1
+  5.         mkmat s_jt if market == `t', mat(S) // share vector of market 1
+  6. 
+.         // individual parts (make individual-specific vector for calculation)
+.         forvalues i = 1(1)20{
+  7.                 mkmat eps_own_`i' if market == `t', mat(E`i') // individual own-price elasticity of market 1
+  8.                 mkmat s_jt_`i' if market == `t', mat(S`i') // choice prob matrix of 20 people in market 1
+  9.                 mkmat alph`i' if market == `t', mat(A`i') // price sensitivity parameter of 20 people in market 1
+ 10.         }
+ 11. 
+.         mkmat eps_own if market == `t', mat(E) // own-price elasticity of market 1 (J*1 vector)
+ 12.         mkmat s_jt_1 - s_jt_20 if market == `t', mat(Si) // choice prob matrix of 20 people in market 1
+ 13.         mkmat alph1 - alph20 if market == `t', mat(Ai) // price sensitivity parameter of 20 people in market 1
+ 14.         mkmat MC1 if market == `t', mat(MC) // MC estimates of market 1 
+ 15. 
+.         matrix Omega_post = J($J, $J, 0) // J*J matrix for Omega (in market 1)
+ 16.         forvalues j = 1(1)$J{
+ 17.                 mat Omega_post[`j',`j'] = -E[`j', 1] // (j,j) element is own-price elasticity
+ 18.         
+.                 // cross price elasticity enters if j and k are produced by the same firm
+.                 forvalues k = 1(1)$J{
+ 19.                         if firm_GQmerge[`j'] == firm_GQmerge[`k'] & `j' != `k'{
+ 20.                                 local s = 0
+ 21.                                 forvalues i =1(1)20{
+ 22.                                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])
+ 23.                                 }
+ 24.                                 mat Omega_post[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 25.                         }
+ 26.                 }
+ 27.         }
+ 28. 
+.         mata {
+ 29.                 P = st_matrix("P")
+ 30.                 P_prime = st_matrix("P_prime")
+ 31.                 nor = norm(P - P_prime)
+ 32.                 st_numscalar("distance", nor)
+ 33.                 }
+ 34.         local dist = distance
+ 35.         //di `dist'
+. 
+.         // get individual-specific demographic vars and v-shock values
+.         forvalues i = 1(1)20{
+ 36.                 mkmat inc`i' inc_sq`i' age`i' child`i' if market == 1, mat(D`i') // demographic variables
+ 37.                 mkmat vo_`i' vp_`i' vs_`i' vm_`i' if market == 1, mat(V`i') // demographic random draws
+ 38.         }
+ 39. 
+.         forvalues l = 1(1)20 {
+ 40.                 mat P = P_prime // update prices
+ 41.                 mat Delta = (C,P,X)*theta_1 // update mean utility
+ 42.                 mat S = J($J, 1, 0)
+ 43.         
+.                 forvalues i = 1(1)20{
+ 44.                         mat M`i' = hadamard((C,P,X), V`i')*theta_2[1..4,1] /*
+>                                 */+ hadamard((C,P,X), D`i'*(theta_2[1..4,2..5])')*J(4,1,1) //update individual shock
+ 45.                         mat A`i' = /* // update price sensitive parameter
+>                                 */ J(24, 1, theta_1[2,1]) + V`i'[1..24,2]*theta_2[2,1] + D`i'*(theta_2[2,2..5])'      
+>   
+ 46.         
+.                         mata {
+ 47.                                 delta = st_matrix("Delta")
+ 48.                                 mu = st_matrix("M`i'")
+ 49.                                 share_numel = exp(delta+mu)
+ 50.                                 share_denom = 1 + colsum(share_numel)
+ 51.                                 share = share_numel/share_denom
+ 52.                                 st_matrix("Share`i'", share)
+ 53.                         }
+ 54.                         mat S`i' = Share`i'
+ 55.                         mat S = S + S`i'
+ 56.                 }
+ 57.                 
+.                 mat S = S/20
+ 58.                 mat Si = [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, /*
+>                 */ S11, S12, S13, S14, S15, S16, S17, S18, S19, S20]
+ 59.                 mat Ai = [A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, /*
+>                 */ A11, A12, A13, A14, A15, A16, A17, A18, A19, A20]
+ 60.                 
+.                 mat Omega_post = J($J, $J, 0) // J*J matrix for Omega (in market 1)             
+ 61.                 forvalues j = 1(1)$J {
+ 62.                         // cross price elasticity enters if j and k are produced by the same firm
+.                         forvalues k = 1(1)$J {
+ 63.                                 if `j' == `k'{
+ 64.                                         local eps = 0
+ 65.                                         forvalues i =1(1)20{
+ 66.                                         local eps = `eps' + (Ai[1, `i']*Si[`j',`i']*(1-Si[`k',`i']))
+ 67.                                         }
+ 68.                                         mat Omega_post[`j',`k'] = (-1)*`eps'/20 // average of 20 people's individua
+> l elasticities
+ 69.                                 }               
+ 70.                                 else if firm_GQmerge[`j'] == firm_GQmerge[`k'] & `j' != `k'{
+ 71.                                         local s = 0
+ 72.                                         forvalues i =1(1)20{
+ 73.                                                 local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])               
+>                      
+ 74.                                         }
+ 75.                                         mat Omega_post[`j',`k'] = `s'/20 // average of 20 people's individual elast
+> icities
+ 76.                                 }
+ 77.                         }
+ 78.                 }
+ 79.                 mat P_prime = MC + (invsym(Omega_post)*S) // new guess of post-merger price
+ 80.         
+.                 mata {
+ 81.                         P = st_matrix("P")
+ 82.                         P_prime = st_matrix("P_prime")
+ 83.                         nor = norm(P - P_prime)
+ 84.                         st_numscalar("distance", nor)
+ 85.                 }
+ 86.         
+.                 local dist = distance
+ 87.                 *di `dist'
+.         }
+ 88.         mat P_post_GQ = P_post_GQ \ P_prime
+ 89.         mat Q_post_GQ = Q_post_GQ \ S
+ 90. }
+
+. 
+. svmat P_post_GQ, name(price_GQ)
+
+. svmat Q_post_GQ, name(share_GQ)
+
+. 
+. *tabstat price price_GQ1, stat(mean median SD)
+. *bysort firmbr: tabstat price price_GQ1, stat(mean median SD)
+. gen diff_p_GQ = price_GQ1 - price
+
+. bysort firmbr: tabstat diff_p_GQ, stat(mean median SD)
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1004
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0862076  .0885197  .0352929
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1006
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0496467  .0423173  .0418358
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1007
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0566475   .049013   .038395
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1009
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0658933  .0641001  .0341082
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1011
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ | -.0002798 -.0040205  .0419982
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1013
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |    .04247  .0387133  .0392095
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1017
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0432178  .0429968  .0402746
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1030
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0462872  .0492239  .0396724
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1045
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0424379   .041132  .0392627
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2005
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |   .054998  .0588456  .0416876
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2008
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0601888  .0595093  .0376722
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2015
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0680178   .064538  .0394932
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2016
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0358596  .0340334  .0355977
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2019
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |   .049622   .042924  .0389038
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2026
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0308113  .0325736  .0358857
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2028
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ | -.0127306 -.0105697  .0405194
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2040
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0447137  .0468202  .0372147
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2048
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0423149  .0419808  .0370979
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 3006
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |   .043916   .040424  .0382928
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 3014
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0264544  .0283851  .0400212
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4002
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0167988  .0144903  .0397524
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4010
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0640809  .0633271  .0387292
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4012
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |  .0691583  .0642154  .0378437
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 6018
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   diff_p_GQ |   .029575  .0263743  .0383461
+--------------------------------------------
+
+. 
+. gen Q_diff_GQ = share_GQ1 - share
+
+. bysort firmbr: tabstat Q_diff_GQ, stat(mean median SD)
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1004
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ |   .001438  .0005082  .0278335
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1006
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0238981 -.0137954  .0411508
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1007
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0140471 -.0137236  .0381665
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1009
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ |  .0012297 -.0006473  .0191971
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1011
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0295506 -.0140464  .0653171
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1013
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0029532 -.0031133  .0276591
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1017
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ |  -.007997 -.0044702  .0310336
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1030
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ |  .0056831   .001351  .0184327
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 1045
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ |  .0048974 -.0008727   .022612
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2005
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0118387 -.0103956  .0360731
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2008
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0102316 -.0084604  .0307862
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2015
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ |  .0075815  .0020099  .0204967
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2016
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0062664 -.0044538  .0301159
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2019
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0082342 -.0054556  .0334334
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2026
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0016997 -.0040398  .0272537
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2028
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0078374  -.006942  .0303401
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2040
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ |  .0068325   .001425  .0174331
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 2048
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ |  .0069283  .0010214  .0244295
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 3006
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0030923 -.0058732  .0304758
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 3014
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0160349 -.0078398    .03727
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4002
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0041527 -.0043812  .0263766
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4010
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ |    .00573  .0006197  .0250095
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 4012
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0094408 -.0068538  .0301687
+--------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------
+-> firmbr = 6018
+
+    Variable |      Mean       p50        SD
+-------------+------------------------------
+   Q_diff_GQ | -.0048308 -.0039586  .0265231
+--------------------------------------------
+
+. 
+. timer off 3
+
+. timer list 3
+   3:    617.99 /        1 =     617.9880
+
+.         
+. ************************************************************************
+. 
+. timer off 1
+
+. timer list 1
+   1:    944.13 /        1 =     944.1290
+
+. cap log close

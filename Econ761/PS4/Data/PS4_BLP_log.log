@@ -1,0 +1,212 @@
+------------------------------------------------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  /Users/yuichirotsuji/Documents/Econ761/PS4/Data/PS4_BLP_log.log
+  log type:  text
+ opened on:   1 Nov 2024, 17:10:36
+
+. timer clear 1
+
+. timer on 1 // The entrire compilation takes about *** 15 min ***
+
+. 
+. ************************************************************************
+. ************************************
+. // Global variables definition
+. global J = 24 // number of brands in each market
+
+. global T = 94 // number of markets
+
+. set seed 1234
+
+. ************************************************************************
+. *(6) MC recovery with mixed logit demand & BLP results
+. ************************************
+. // import data again and generate basic variables
+. import excel "cereal_ps3.xls",firstrow clear
+(31 vars, 2,256 obs)
+
+. bysort year quarter city: egen share_total = total(share) //get total share of each market
+
+. gen share_o = 1 - share_total //share of outside option, S_0 
+
+. order share_total share_o, after(share)
+
+. 
+. // merge with demographic and v's (created by PS4_datacleaning.do)
+. merge m:1 year quarter city using demogr_and_v // all observations are matched
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                             0
+    Matched                             2,256  (_merge==3)
+    -----------------------------------------
+
+. drop cyq _merge
+
+. 
+. ************************************
+. // calculate choice probability and market shares
+. egen market = group(year quarter city) //generate market number for iteration
+
+. order market, after(quarter)
+
+. gen constant = 1, before(price) // constant var (just for calculation)
+
+. 
+. // use coeffcient estimates in result.txt
+. mat theta_1 = (-1.5869 \ -32.4374 \ 0.1441 \ 0.7725)
+
+. mat theta_2 = (0.3772, 3.0888, 0, 1.1859, 0 \ /*
+>                          */ 1.848, 16.598, -0.659, 0, 11.6245\ /*
+>                          */ -0.0035, -0.1925, 0, 0.0296, 0\ /*
+>                          */ 0.081, 1.4684, 0, -1.5143, 0) 
+
+. 
+. mkmat constant price sugar mushy , mat(x_jt) // get "X2" variables from data
+
+. mat delta_jt = x_jt *  theta_1 // market-brand specific mean utility
+
+. *mat list delta_jt // (2256*1) vector
+. svmat delta_jt, name(delta) // give delta to dta dataframe
+
+. 
+. ***** Compute \mu_ijt for 20 people in each market (until line.213)*****
+. // create \mu_1jt (first person in each market)
+. mkmat inc1 inc_sq1 age1 child1, mat(D) // demographic variables
+
+. mkmat vo_1 vp_1 vs_1 vm_1, mat(V) // demographic random draws
+
+. mat mu_ijt = hadamard(x_jt, V)*theta_2[1..4,1] /*
+>                         */+ hadamard(x_jt, D*(theta_2[1..4,2..5])')*J(4,1,1)
+
+. mat alpha_i = /* // price sensitive parameter (need for calculating ds/dp)
+>                 */ J(2256,1,theta_1[2,1]) + V[1..2256,2]*theta_2[2,1] + D*(theta_2[2,2..5])'
+
+. 
+. // repeat for 20 consumers in the market
+. forvalues i = 2(1)20{
+  2.         mkmat inc`i' inc_sq`i' age`i' child`i', mat(D) // demographic variables
+  3.         mkmat vo_`i' vp_`i' vs_`i' vm_`i', mat(V) // demographic random draws
+  4.         mat mu_ijt = mu_ijt, hadamard(x_jt, V)*theta_2[1..4,1] /*
+>                         */+ hadamard(x_jt, D*(theta_2[1..4,2..5])')*J(4,1,1)
+  5.         mat alpha_i = /* // price sensitive parameter (need for calculating ds/dp)
+>                 */ alpha_i, J(2256,1,theta_1[2,1]) + V[1..2256,2]*theta_2[2,1] + D*(theta_2[2,2..5])'
+  6. }
+
+. ***** \mu_ijt cumputation complete *****
+. svmat mu_ijt, name(mu) // give \mu_ijt to dta dataframe
+
+. svmat alpha_i, name(alph) // give \alpha_i to dta dataframe
+
+. 
+. // create individual choice prob (as new vars) for 20 people in each market
+. forvalues i = 1(1)20{
+  2.         gen s_numel_`i' = exp(delta1 + mu`i')
+  3.         bysort market: egen s_denom_`i' = total(s_numel_`i')
+  4.         gen s_jt_`i' = s_numel_`i'/(1+s_denom_`i')
+  5.         drop s_numel_`i'
+  6.         drop s_denom_`i'
+  7. }
+
+. 
+. // derive market shares (Equation(11) of Nevo(2000a))
+. egen s_jt = rowmean(s_jt_1 - s_jt_20) 
+
+. 
+. 
+. ************************************
+. // create Ometa^pre and recover MC
+. forvalues i = 1(1)20{
+  2.         gen eps_own_`i' = alph`i' * s_jt_`i'*(1-s_jt_`i')
+  3. } 
+
+. egen eps_own = rowmean(eps_own_1 - eps_own_20) // average of 20 individual \epsilon
+
+. 
+. ***** Recover MC (until line.xxx) *****
+. // For t=1 (just to create an initial MC vector: Stata can't have an empty vector.)
+. mkmat eps_own if market == 1, mat(E) // own-price elasticity of market 1 (J*1 vector)
+
+. mkmat price if market == 1, mat(P) // price vector of market 1
+
+. mkmat s_jt if market == 1, mat(S) // share vector of market 1
+
+. mkmat s_jt_1 - s_jt_20 if market == 1, mat(Si) // choice prob matrix of 20 people in market 1
+
+. mkmat alph1 - alph20 if market == 1, mat(Ai) // price sensitivity parameter of 20 people in market 1
+
+.         
+. matrix Omega_pre = J($J, $J, 0) // J*J matrix for Omega (in market 1)
+
+. forvalues j = 1(1)$J{
+  2.         mat Omega_pre[`j',`j'] = -E[`j', 1] // (j,j) element is own-price elasticity
+  3.         
+.         // cross price elasticity enters if j and k are produced by the same firm
+.         forvalues k = 1(1)$J{
+  4.         if firm[`j'] == firm[`k'] & `j' != `k'{
+  5.                 local s = 0
+  6.                 forvalues i =1(1)20{
+  7.                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])
+  8.                 }
+  9.                 mat Omega_pre[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 10.                 }
+ 11.         }
+ 12. }
+
+. 
+. // MC of brands in market 1 (we'll add MCs in other markets vertically) 
+. cap mat drop MC // initialize the MC vector
+
+. mat MC = P - (invsym(Omega_pre)*S) //
+
+. 
+. // same for other markets (t=2,3,...,94)
+. forvalues t = 2(1)94{
+  2.         // get price and share vectors from data 
+.         mkmat eps_own if market == `t', mat(E) // own-price elasticity of market t (J*1 vector)
+  3.         mkmat price if market == `t', mat(P) // price vector of market t
+  4.         mkmat s_jt if market == `t', mat(S) // share vector of market t
+  5.         mkmat s_jt_1 - s_jt_20 if market == `t', mat(Si) // choice prob matrix of 20 people in market 1
+  6.         mkmat alph1 - alph20 if market == `t', mat(Ai) // price sensitivity parameter of 20 people in market 1
+  7.         
+.         matrix Omega_pre = J($J, $J, 0) // J*J matrix for Omega (in market t)
+  8.         forvalues j = 1(1)$J{
+  9.                 mat Omega_pre[`j',`j'] = -E[`j', 1] // (j,j) element is own-price elasticity
+ 10.         
+.                 // cross price elasticity enters if j and k are produced by the same firm
+.                 forvalues k = 1(1)$J{
+ 11.                         if firm[`j'] == firm[`k'] & `j' != `k'{
+ 12.                                 local s = 0
+ 13.                                 forvalues i =1(1)20{
+ 14.                                         local s = `s' + (Ai[1, `i']*Si[`j',`i']*Si[`k',`i'])
+ 15.                                 }
+ 16.                                 mat Omega_pre[`j',`k'] = `s'/20 // average of 20 people's individual elasticities
+ 17.                         }
+ 18.                 }
+ 19.         }       
+ 20.         mat MC = MC\(P - (invsym(Omega_pre)*S)) //add MC of market t(=2,3,..,94)
+ 21. }
+
+. ***** Recover MC ends*****
+. svmat MC, name(MC) // give MC to dta dataframe
+
+. gen Markups = price - MC1 // calculate markups
+
+. gen PCM = Markups/price // calculate MPC
+
+. 
+. tabstat Markups PCM MC1, stat(mean median sd) // Mean, median and SD (used in Q1(6))
+
+   Stats |   Markups       PCM       MC1
+---------+------------------------------
+    Mean |  .0435736   .373053   .082166
+     p50 |  .0408209  .3300097  .0817146
+      SD |  .0104121  .1626013  .0328807
+----------------------------------------
+
+. 
+end of do-file
+
+. clear
+
+. exit
