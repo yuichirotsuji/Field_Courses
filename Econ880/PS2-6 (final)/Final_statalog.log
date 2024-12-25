@@ -1,0 +1,22 @@
+------------------------------------------------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  /Users/yuichirotsuji/Documents/Econ880/PS2-6 (final)/Final_statalog.log
+  log type:  text
+ opened on:  20 Dec 2024, 06:38:46
+
+. 
+. // Load data
+. use Mortgage_simdata_students, clear
+(OxMetrics data)
+
+. format _all %9.0g
+
+. xtset id time
+
+Panel variable: id (unbalanced)
+ Time variable: time, 0 to 5
+         Delta: 1 unit
+
+. 
+end of do-file
+

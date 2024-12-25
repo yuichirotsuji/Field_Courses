@@ -1,0 +1,291 @@
+# We followed the instruction in "PS5_pseudocode".
+########################################################################
+# Initialization of the algorithm (Step 1.)
+########################################################################
+#parameters struct at everywhere
+@everywhere @with_kw mutable struct Primitives
+    β::Float64 = 0.97  # discount factor
+    σ::Float64 = 2.0   # CRRA parameter
+    γ::Float64 = 0.42  # utility weight on consumption
+    α::Float64 = 0.36  # capital share of production function
+    δ::Float64 = 0.06  # capital depreciation rate
+    n::Float64 = 0.011 # population growth rate
+    θ::Float64 = 0.11  # labor income tax rate
+
+    # age parameters
+    N::Int64 = 66   # living period
+    JR::Int64 = 46  # retired age
+    η::Vector{Float64} = [0.59923239, 0.63885106, 0.67846973, 0.71808840, 0.75699959, 
+                          0.79591079, 0.83482198, 0.87373318, 0.91264437, 0.95155556, 
+                          0.99046676, 0.99872065, 1.0069745,  1.0152284,  1.0234823, 
+                          1.0317362,  1.0399901,  1.0482440,  1.0564979,  1.0647518, 
+                          1.0730057,  1.0787834,  1.0845611,  1.0903388,  1.0961165, 
+                          1.1018943,  1.1076720,  1.1134497,  1.1192274,  1.1250052, 
+                          1.1307829,  1.1233544,  1.1159259,  1.1084974,  1.1010689,
+                          1.0936404,  1.0862119,  1.0787834,  1.0713549,  1.0639264,
+                          1.0519200,  1.0430000,  1.0363000,  1.0200000,  1.0110000]
+    μ₁::Float64 = 1.0
+
+    # capital grid setting
+    a_min::Float64 = 0.0 
+    a_max::Float64 = 100.0
+    na::Int64 = 1000 
+    a_grid::SharedVector{Float64} = SharedVector(collect(range(start=a_min, stop=a_max, length=na)))
+
+    # productivity grid setting
+    nz::Int64 = 2
+    z_grid::Vector{Float64} = [3.0, 0.5]                 # zₕ and zₗ
+    Π::SharedArray{Float64, 2} = SharedArray([0.9261 0.0739; 0.0189 0.9811]) # transition matrix of productivity
+    z₀::Vector{Float64} = [0.2037,0.7963]
+end
+
+#functions struct at everywhere
+@everywhere @with_kw mutable struct Results
+    val_func::SharedArray{Float64,3}   # value function Vⱼ(a,z)
+    pol_func::SharedArray{Float64,3}   # capital policy function aⱼ'(a,z)
+    labor_func::SharedArray{Float64,3} # labor policy function lⱼ(a,z)
+    μ::SharedArray{Float64,3}          # distribution of population
+    M::Vector{Float64}                 # rerative size of cohort
+    K::Float64                         # aggregate capital
+    L::Float64                         # aggregate labor
+    r::Float64                         # (equilibrium) capital price
+    w::Float64                         # (equilibrium) wage
+    b::Float64                         # (equilibrium) pension benefit
+end
+
+#initialization function at everywhere
+@everywhere function Initialize()
+    prim = Primitives()
+    prim.θ = 0.11
+    prim.γ = 0.42
+    prim.z_grid = [3.0, 0.5]
+
+    val_func = zeros(prim.N, prim.na, prim.nz)
+    pol_func = zeros(prim.N, prim.na, prim.nz)
+    labor_func = zeros((prim.JR-1), prim.na, prim.nz)
+    μ = zeros(prim.N, prim.na, prim.nz)
+    M = zeros(prim.N)
+    M[1] = prim.μ₁
+    for j in 2:prim.N
+        M[j] = M[j-1]/(1+prim.n)
+    end
+
+    K = 3.3  # initiai aggregate capital (in Hint)
+    L = 0.3  # initiai aggregate labor (in Hint)
+    r = 0.05 # initiai capital price (in PS5)
+    w = 1.05 # initiai wage (in PS5)
+    b = 0.2  # initiai pension benefit (in PS5)
+    res = Results(val_func, pol_func, labor_func, μ, M, K, L, r, w, b)
+
+    return prim, res
+end
+
+########################################################################
+# Backward induction (Step 2.)
+########################################################################
+# utility function of working agents
+function uW(c::Float64, l::Float64, prim::Primitives)
+    @unpack σ, γ = prim
+    return (((c^γ)*((1-l)^(1-γ)))^(1-σ))/(1-σ)
+end
+
+# utility function of retired agents
+function uR(c::Float64, prim::Primitives)
+    @unpack σ, γ = prim
+    if c == 0.0
+        return 0.0
+    else
+        return (c^((1-σ)*γ))/(1-σ)
+    end
+end
+
+# Solving DP with buckwrad induction
+function Backward_iteration(prim::Primitives, res::Results)
+    @unpack_Primitives prim
+    @unpack r, w, b = res
+
+    # backward induction: start from N(=66) to 1
+    for j in N:-1:1
+        for (a_index,a) in enumerate(a_grid)
+            for (z_index,z) in enumerate(z_grid)
+                if j == N   # last period
+                    # no need to roop for a' : aₙ'(a,z) = 0
+                    c = (1+r)*a + b                               # consume all
+
+                    res.val_func[j,a_index, z_index] = uR(c,prim) # V_N(a,z) = u(c)
+                    res.pol_func[j,a_index, z_index] = 0.0        # a'_N(a,z) = 0
+
+                elseif j < N && j >= JR     # Retirees' problem 
+                    budget = (1+r)*a + b    # budget = (capital income) + pension
+                    v_candidate = -Inf
+                    # grid search over a_grid
+                    for ap_index in 1:na
+                        c = budget - a_grid[ap_index]
+                        if c >= 0
+                            val = uR(c,prim) + β*(Π[z_index, 1]*res.val_func[j+1,ap_index,1] + Π[z_index, 2]*res.val_func[j+1,ap_index,2])
+                            if val > v_candidate
+                                v_candidate = val
+                                res.pol_func[j,a_index, z_index] = a_grid[ap_index] # update V_j(a,z)
+                            end
+                        end
+                    end
+                    res.val_func[j,a_index, z_index] = v_candidate # update V_j(a,z)
+
+                elseif j < JR && j > 0  # workers' problem
+                    v_candidate = -Inf
+                    # grid search over a_grid
+                    for ap_index in 1:na
+                        e = z*η[j] # wage-efficiency profile
+
+                        # labor supply (closed form solution & constained to [0,1])
+                        l = (γ*(1-θ)*e*w - (1-γ)*((1+r)*a-a_grid[ap_index]))/((1-θ)*w*e)
+                        if l>1
+                            l = 1.0
+                        elseif l < 0
+                            l =0.0
+                        end
+                        # consumption = (labor income) + (capital income) - (saving(i.e. a'))
+                        c = w*(1-θ)*e*l + (1+r)*a - a_grid[ap_index]
+                        
+                        if c >= 0.0
+                            val = uW(c,l,prim) + β*(Π[z_index, 1]*res.val_func[j+1,ap_index,1] + Π[z_index, 2]*res.val_func[j+1,ap_index,2])
+                            if val > v_candidate
+                                v_candidate = val                                   # new candidate of vⱼ(a,s)
+                                res.pol_func[j,a_index, z_index] = a_grid[ap_index] # update capital policy function
+                                res.labor_func[j,a_index, z_index] = l              # update labor supply functiom
+                            end
+                        end                        
+                    end
+                    res.val_func[j,a_index, z_index] = v_candidate # update value function
+                end
+            end
+        end
+        # println("Age ", j, " done.")
+    end
+end
+
+########################################################################
+# Find stationary distribution (Step 3.)
+########################################################################
+# T-star operator
+@everywhere function Solve_SD(prim::Primitives,res::Results)
+    @unpack pol_func = res #unpack policy function and distribution
+    @unpack N, a_grid, z_grid, na, nz, Π = prim #unpack model primitives
+
+    μ_SD = zeros(prim.N, prim.na, prim.nz) # container for μ
+    μ_SD[1,1,1] = 0.2037/(sum(res.M))      # initial distribution of (a,zₕ)
+    μ_SD[1,1,2] = 0.7963/(sum(res.M))      # initial distribution of (a,zₗ)
+
+    for j in 1:N-1
+        for z_index in eachindex(z_grid) 
+            for a_index in eachindex(a_grid) 
+                z = z_grid[z_index]                # value of z (productivity) today
+                a = a_grid[a_index]                # value of a (capital holding) today
+                ap = pol_func[j, a_index, z_index] # get a' using policy function aⱼ'(a,z)
+
+                ap_index = findfirst(isequal(ap),a_grid)                      # get a' position in a_grid
+                μ_SD[j+1,ap_index,1] += μ_SD[j,a_index,z_index]*Π[z_index, 1] # add 
+                μ_SD[j+1,ap_index,2] += μ_SD[j,a_index,z_index]*Π[z_index, 2] # add 
+            end
+        end
+        μ_SD[j+1,:,:] = μ_SD[j+1,:,:]/(1+prim.n) # relative size normalization
+    end
+    return μ_SD
+end
+
+########################################################################
+# Find equilibrium prices using market clearing conditions (Step 4.)
+########################################################################
+# calculate prices and pension benefit given (K,L)
+function get_prices(prim::Primitives, res::Results)
+    @unpack α, δ, θ, JR, N = prim
+    @unpack M, K, L = res
+
+    res.r = α*(L/K)^(1-α) - δ        # model-implied EQ capital price
+    res.w = (1-α)*(K/L)^α            # model-implied EQ wage
+    res.b = (θ*res.w*L)/sum(M[JR:N]) # model-implied EQ pension benefit
+end
+
+# calculate aggregate capital and labor from supply side
+function get_MC(prim::Primitives, res::Results)
+    # market-clearing aggregate labor supply
+    K_temp = zeros(prim.N, prim.na, prim.nz)
+    for j in 1:prim.N
+        for z_index in 1:prim.nz
+            K_temp[j,:,z_index] = prim.a_grid .* res.μ[j,:,z_index]
+        end
+    end
+    K_next = sum(K_temp) 
+
+    # market-clearing aggregate labor supply
+    E = zeros((prim.JR-1), prim.na, prim.nz)
+    for (z_index,z) in enumerate(prim.z_grid)
+        for j in 1:prim.JR-1
+            E[j,:,z_index] = (prim.η[j]*z)*ones(prim.na)
+        end
+    end
+    L_next = sum(res.labor_func .* E .* res.μ[1:prim.JR-1,:,:]) 
+
+    return K_next, L_next 
+end
+
+#
+function calc_welfare(res::Results)
+    return sum(res.val_func .* res.μ)
+end
+
+function calc_cv(res::Results)
+    A = zeros(prim.N, prim.na, prim.nz)
+    for z_index in 1:prim.nz
+        a₀ = zeros(prim.na)
+        A[:,:,z_index] = vcat((a₀)',res.pol_func[1:(prim.N - 1),:,z_index])
+    end
+    
+    m₁ = sum(A .* res.μ)
+    m₂ = sum(((A .* res.μ) .- m₁).^2)
+    return m₁/sqrt(m₂)
+end
+
+# solve market clearing condition
+@everywhere function Solve_CK(prim::Primitives, res::Results; tol::Float64 = 1e-3, max_iter::Int64 = 1000)
+    err = 100            # initial error: some big number
+    nₘ = 1               # iteration counter
+    convergence_flag = 0 # convergence flag
+
+    while convergence_flag == 0 && nₘ < max_iter
+        get_prices(prim,res)              # compute prices and pension benefit using (K,L)
+        Backward_iteration(prim, res)     # update Vⱼ(a,z), aⱼ'(a,z) and lⱼ(a,z) and store in res-struct
+        res.μ = Solve_SD(prim, res)       # update μ and stored in res-struct
+        K_next, L_next = get_MC(prim,res) # get new guess of K and L
+        
+        err = abs(res.K - K_next) + abs(res.L - L_next) # update error norm (as in pseudocode)
+
+        if err > tol
+            res.K = (0.9*res.K)+(0.1*K_next) # Next guess of K
+            res.L = (0.9*res.L)+(0.1*L_next) # Next guess of L
+            println("Current iteration count: ", nₘ, ", error: ", err, ".")
+            nₘ += 1
+        elseif err < tol
+            convergence_flag = 1
+        end
+    end
+
+    W = calc_welfare(res)
+    cv = calc_cv(res)
+ 
+    println("*")
+    println("The model converged in ", nₘ, " iterations.")
+    println("****************************************************")
+    println("(Parameters: θ = ", prim.θ, ", zₕ = ", prim.z_grid[1], ", γ = ", prim.γ, ")")
+    println("capital K = ", res.K)
+    println("labor L = ", res.L)
+    println("wage w = ", res.w)
+    println("interest rate r = ", res.r)
+    println("pension benefit b = ", res.b)
+    println("total welfare W = ", W)
+    println("CV =  ", cv)
+    println("****************************************************")
+
+end
+
+########################################################################

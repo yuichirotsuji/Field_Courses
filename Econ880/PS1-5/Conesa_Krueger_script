@@ -1,0 +1,96 @@
+########################################################################
+# Script for solving OLG (Conesa-Kruger)
+########################################################################
+cd("/Users/yuichirotsuji/Documents/Econ880/PS1-5")
+using Distributed
+#addprocs(2)
+@everywhere using Parameters, Plots, SharedArrays #import the libraries we want
+include("Conesa_Krueger_functions") #import the functions that solve the model
+@everywhere prim,res = Initialize()
+
+########################################################################
+# Exercise 1 (Solving OLG model)
+########################################################################
+@time Backward_iteration(prim,res)
+
+# Value function plot at model age 50
+using Plots
+plot(prim.a_grid,res.val_func[50,:,1], title="Value function at model age 50", ylabel = "V_50(a)", xlabel ="a", label="")
+savefig("Val_func_50.png")
+
+# Policy functions plot at model age 20
+plot(prim.a_grid,res.pol_func[20,:,1], title="Policy function at model age 20", ylabel = "a_20(a,z)", xlabel ="a", label="z = High")
+plot!(prim.a_grid,res.pol_func[20,:,2], label="z = Low")
+savefig("Pol_func_20.png")
+
+#=
+# "saving" policy functions plot at model age 20
+s_20_high = res.pol_func[20,:,1] - prim.a_grid
+s_20_low = res.pol_func[20,:,2] - prim.a_grid
+plot(prim.a_grid,s_20_high, title="Saving function at model age 20", ylabel = "a'_20(a,z)-a", xlabel ="a", label="z = High")
+plot!(prim.a_grid,s_20_low, label="z = Low")
+
+# labor supply functions at model age 20
+plot(prim.a_grid,res.labor_func[20,:,1], title="Labor supply function at model age 20", ylabel = "l_20(a,z)", xlabel ="a", label="z = High")
+plot!(prim.a_grid,res.labor_func[20,:,2], label="z = Low")
+=#
+
+########################################################################
+# Exercise 2 (Solving SS distribution)
+#######################################################################
+#=
+ We aren't required to create particular ouput in this exercise:
+ see "Solve_SD" function in "Conesa_Krueger_functions.jl".
+=#
+
+########################################################################
+# Exercise 3 (Marlet clearing)
+#######################################################################
+# Case I: Benchmark model
+## with social security
+prim, res = Initialize() # initialize values
+@time Solve_CK(prim,res) # about 30 sec for convergence
+
+## without social security
+prim, res = Initialize() # initialize values
+prim.θ = 0.0             # eliminate social security
+@time Solve_CK(prim,res)
+
+################################
+# Case II: No idiosyncratic risk
+## with social security
+prim, res = Initialize() # initialize values
+prim.z_grid = [0.5, 0.5] # no idiosyncratic uncertainty
+@time Solve_CK(prim,res) # about 30 sec for convergence
+
+## without social security
+prim, res = Initialize() # initialize values
+prim.z_grid = [0.5, 0.5] # no idiosyncratic uncertainty
+prim.θ = 0.0             # eliminate social security
+@time Solve_CK(prim,res)
+
+################################
+# Case III: Exogenous labor supply
+## with social security
+prim, res = Initialize() # initialize values
+prim.γ = 1.0             # inerastic labor supply
+@time Solve_CK(prim,res) # about 20 sec for convergence
+
+## without social security
+prim, res = Initialize() # initialize values
+prim.γ = 1.0             # inerastic labor supply
+prim.θ = 0.0             # eliminate social security
+@time Solve_CK(prim,res) # about 20 sec for convergence
+
+#######################################################################
+#=
+include("Conesa_Krueger_functions") #import the functions that solve the model
+
+c = 0.2
+c >=0.0
+
+=#
+0.0/0.32
+uR(0.0,prim)
+
+(0.0)^(-1)
